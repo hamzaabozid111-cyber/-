@@ -1,0 +1,72 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEYSTORE: ${{ secrets.KEYSTORE_BASE64 != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Add Android platform
+        run: npx cap add android
+
+      - name: Generate app icons from assets/
+        run: npx capacitor-assets generate --android --iconBackgroundColor '#5a0b1c' --iconBackgroundColorDark '#5a0b1c'
+
+      - name: Patch manifest (vibration + portrait)
+        run: |
+          M=android/app/src/main/AndroidManifest.xml
+          sed -i 's#<application#<uses-permission android:name="android.permission.VIBRATE" />\n    <application#' $M
+          sed -i 's#<activity#<activity android:screenOrientation="portrait"#' $M
+
+      - name: Sync web files
+        run: npx cap sync android
+
+      - name: Build debug APK (installable)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: spy-hamza-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+      # ---- Google Play bundle (only runs if you added the 4 signing secrets) ----
+      - name: Build signed release bundle (AAB)
+        if: env.HAS_KEYSTORE == 'true'
+        working-directory: android
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > ../release.keystore
+          ./gradlew bundleRelease
+          jarsigner -keystore ../release.keystore \
+            -storepass "${{ secrets.KEYSTORE_PASSWORD }}" \
+            -keypass "${{ secrets.KEY_PASSWORD }}" \
+            app/build/outputs/bundle/release/app-release.aab "${{ secrets.KEY_ALIAS }}"
+
+      - name: Upload AAB
+        if: env.HAS_KEYSTORE == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: spy-hamza-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
